@@ -11,8 +11,9 @@ Client = module.exports = function(listener, req, res, options, head){
 		closeTimeout: 0
 	}, options);
 	this.connections = 0;
-	this.connected = false;
+	this._open = false;
 	this._heartbeats = 0;
+	this.connected = false;
 	this.upgradeHead = head;
 	this._onConnect(req, res);
 };
@@ -20,7 +21,7 @@ Client = module.exports = function(listener, req, res, options, head){
 require('sys').inherits(Client, process.EventEmitter);
 
 Client.prototype.send = function(message){
-	if (!this.connected || !(this.connection.readyState === 'open' ||
+	if (!this._open || !(this.connection.readyState === 'open' ||
 			this.connection.readyState === 'writeOnly')){
 		return this._queue(message);
 	}
@@ -37,9 +38,14 @@ Client.prototype.broadcast = function(message){
 Client.prototype._onMessage = function(data){
 	var messages = this._decode(data);
 	if (messages === false) return this.listener.options.log('Bad message received from client ' + this.sessionId);
-	for (var i = 0, l = messages.length; i < l; i++){
-		if (messages[i].substr(0, 3) == '~h~'){
-			return this._onHeartbeat(messages[i].substr(3));
+	for (var i = 0, l = messages.length, frame; i < l; i++){
+		frame = messages[i].substr(0, 3);
+		switch (frame){
+			case '~h~':
+				return this._onHeartbeat(messages[i].substr(3));
+			case '~j~':
+				messages[i] = JSON.parse(messages[i].substr(3));
+				break;
 		}
 		this.emit('message', messages[i]);
 		this.listener._onClientMessage(messages[i], this);
@@ -58,7 +64,7 @@ Client.prototype._encode = function(messages){
 	var ret = '', message,
 			messages = Array.isArray(messages) ? messages : [messages];
 	for (var i = 0, l = messages.length; i < l; i++){
-		message = messages[i] === null || messages[i] === undefined ? '' : String(messages[i]);
+		message = messages[i] === null || messages[i] === undefined ? '' : stringify(messages[i]);
 		ret += frame + message.length + frame + message;
 	}
 	return ret;
@@ -91,6 +97,7 @@ Client.prototype._payload = function(){
 	
 	this.connections++;
 	this.connected = true;
+	this._open = true;
 	
 	if (!this.handshaked){
 		this._generateSessionId();
@@ -125,10 +132,10 @@ Client.prototype._onHeartbeat = function(h){
 };
 
 Client.prototype._onClose = function(){
-	if (this.connected){
+	if (this._open){
 		var self = this;
 		if ('_heartbeatTimeout' in this) clearTimeout(this._heartbeatTimeout);
-		this.connected = false;
+		this._open = false;
 		this._disconnectTimeout = setTimeout(function(){
 			self._onDisconnect();
 		}, this.options.closeTimeout);
@@ -136,10 +143,10 @@ Client.prototype._onClose = function(){
 };
 
 Client.prototype._onDisconnect = function(){
-	if (!this.finalized){
+	if (this.connected){
 		this._writeQueue = [];
+		this._open = false;
 		this.connected = false;
-		this.finalized = true;
 		if (this.handshaked){
 			this.emit('disconnect');
 			this.listener._onClientDisconnect(this);
@@ -162,11 +169,27 @@ Client.prototype._generateSessionId = function(){
 };
 
 Client.prototype._verifyOrigin = function(origin){
-	var parts = urlparse(origin), origins = this.listener.options.origins;
-	return origins.indexOf('*:*') !== -1 ||
-		origins.indexOf(parts.host + ':' + parts.port) !== -1 ||
-		origins.indexOf(parts.host + ':*') !== -1 ||
-		origins.indexOf('*:' + parts.port) !== -1;
+	var origins = this.listener.options.origins;
+	if (origins.indexOf('*:*') !== -1) {
+		return true;
+	}
+	if (origin) {
+		try {
+			var parts = urlparse(origin);
+			return origins.indexOf(parts.host + ':' + parts.port) !== -1 ||
+					origins.indexOf(parts.host + ':*') !== -1 ||
+					origins.indexOf('*:' + parts.port) !== -1;  
+		} catch (ex) {}
+	}
+	return false;
 };
 
 for (var i in options) Client.prototype[i] = options[i];
+
+function stringify(message){
+	if (Object.prototype.toString.call(message) == '[object Object]'){
+		return '~j~' + JSON.stringify(message);
+	} else {
+		return String(message);
+	}
+};

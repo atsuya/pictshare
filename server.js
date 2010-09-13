@@ -1,4 +1,4 @@
-var PictSharePort = 80;
+var PictSharePort = 8080;
 var PictShareFileSizeLimit = 1024 * 1024;
 
 var http = require('http');
@@ -37,7 +37,7 @@ var server = http.createServer(function(request, response) {
 server.listen(PictSharePort);
 
 var numberOfClients = 0;
-var listener = io.listen(server);
+var listener = io.listen(server, {transports: ['websocket']});
 listener.on('connection', function(client) {
     sendNumberOfClients(1);
     client.on('disconnect', function() {
@@ -77,6 +77,7 @@ function handleUpload(request, response) {
 }
 
 function sendNumberOfClients(change) {
+    sys.debug('sending it.')
     numberOfClients += change;
     listener.broadcast('{"type":"users", "content":"'+numberOfClients+'"}');
 }

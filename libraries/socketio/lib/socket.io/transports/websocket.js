@@ -2,6 +2,7 @@ var Client = require('../client'),
 		url = require('url'),
 		Buffer = require('buffer').Buffer,
 		crypto = require('crypto'),
+		net = require('net'),
 
 WebSocket = module.exports = function(){
 	Client.apply(this, arguments);
@@ -14,10 +15,19 @@ WebSocket.prototype._onConnect = function(req, socket){
 	this.request = req;
 	this.connection = socket;
 	this.data = '';
+	
+	if (!(this.connection instanceof net.Stream)){
+	  this.listener.options.log('WebSocket connection invalid');
+		this.connection.writeHead(500);
+		this.connection.write('Invalid');
+		this.connection.end();
+		return false;
+	}
 
 	if (this.request.headers.upgrade !== 'WebSocket' || !this._verifyOrigin(this.request.headers.origin)){
-		this.listener.options.log('WebSocket connection invalid');
-		this.connection.end();
+		this.listener.options.log('WebSocket connection invalid or Origin not verified');
+		this.connection.destroy();
+		return false;
 	}
 
 	this.connection.setTimeout(0);
@@ -27,29 +37,30 @@ WebSocket.prototype._onConnect = function(req, socket){
 	if ('sec-websocket-key1' in this.request.headers){
 		this.draft = 76;
 	}
-
-	if (this.draft == 76){
-		var origin = this.request.headers.origin;
+	
+	var origin = this.request.headers.origin,
+	    location = (origin && origin.substr(0, 5) == 'https' ? 'wss' : 'ws')
+	             + '://' + this.request.headers.host + this.request.url;
 		
+	if (this.draft == 76){
 		headers = [
 			'HTTP/1.1 101 WebSocket Protocol Handshake',
 			'Upgrade: WebSocket',
 			'Connection: Upgrade',
-			'Sec-WebSocket-Origin: ' + (origin || 'null'),
-			'Sec-WebSocket-Location: ws://' + this.request.headers.host + this.request.url
+			'Sec-WebSocket-Origin: ' + origin,
+			'Sec-WebSocket-Location: ' + location
 		];
 		
 		if ('sec-websocket-protocol' in this.request.headers){
 			headers.push('Sec-WebSocket-Protocol: ' + this.request.headers['sec-websocket-protocol']);
 		}
 	} else {
-		
 		headers = [
 			'HTTP/1.1 101 Web Socket Protocol Handshake',
 			'Upgrade: WebSocket',
 			'Connection: Upgrade',
-			'WebSocket-Origin: ' + this.request.headers.origin,
-			'WebSocket-Location: ws://' + this.request.headers.host + this.request.url
+			'WebSocket-Origin: ' + origin,
+			'WebSocket-Location: ' + location
 		];
 		
 		try {
@@ -79,7 +90,7 @@ WebSocket.prototype._handle = function(data){
 		chunk = chunks[i];
 		if (chunk[0] !== '\u0000'){
 			this.listener.options.log('Data incorrectly framed by UA. Dropping connection');
-			this.connection.destroy();
+			this.connection.end();
 			return false;
 		}
 		this._onMessage(chunk.slice(1));
@@ -101,7 +112,8 @@ WebSocket.prototype._proveReception = function(headers){
 					
 			if (spaces === 0 || n % spaces !== 0){
 				this.listener.options.log('Invalid WebSocket key: "' + k + '". Dropping connection');
-				this.connection.destroy();
+				this.connection.writeHead(500);
+				this.connection.end();
 				return false;
 			}
 

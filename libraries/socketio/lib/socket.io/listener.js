@@ -1,13 +1,16 @@
 var url = require('url'),
 		sys = require('sys'),
+		fs = require('fs'),
 		options = require('./utils').options,
 		Client = require('./client'),
+		clientVersion = require('./../../support/socket.io-client/lib/io').io.version,
 		transports = {
 			'flashsocket': require('./transports/flashsocket'),
 			'htmlfile': require('./transports/htmlfile'),
 			'websocket': require('./transports/websocket'),
 			'xhr-multipart': require('./transports/xhr-multipart'),
-			'xhr-polling': require('./transports/xhr-polling')
+			'xhr-polling': require('./transports/xhr-polling'),
+			'jsonp-polling': require('./transports/jsonp-polling')
 		},
 
 Listener = module.exports = function(server, options){
@@ -17,10 +20,15 @@ Listener = module.exports = function(server, options){
 	this.options({
 		origins: '*:*',
 		resource: 'socket.io',
-		transports: ['websocket', 'flashsocket', 'htmlfile', 'xhr-multipart', 'xhr-polling'],
+		transports: ['websocket', 'flashsocket', 'htmlfile', 'xhr-multipart', 'xhr-polling', 'jsonp-polling'],
 		transportOptions: {
 			'xhr-polling': {
-				timeout: null, // no heartbeats for polling
+				timeout: null, // no heartbeats
+				closeTimeout: 8000,
+				duration: 20000
+			},
+			'jsonp-polling': {
+				timeout: null, // no heartbeats
 				closeTimeout: 8000,
 				duration: 20000
 			}
@@ -29,15 +37,16 @@ Listener = module.exports = function(server, options){
 			require('sys').log(message);
 		}
 	}, options);
-	this.clients = [];
-	this.clientsIndex = {};
+
+	this.clients = this.clientsIndex = {};
+	this._clientFiles = {};
 	
 	var listeners = this.server.listeners('request');
 	this.server.removeAllListeners('request');
 	
 	this.server.addListener('request', function(req, res){
 		if (self.check(req, res)) return;
-		for (var i = 0; i < listeners.length; i++){
+		for (var i = 0, len = listeners.length; i < len; i++){
 			listeners[i].call(this, req, res);
 		}
 	});
@@ -59,9 +68,9 @@ sys.inherits(Listener, process.EventEmitter);
 for (var i in options) Listener.prototype[i] = options[i];
 
 Listener.prototype.broadcast = function(message, except){
-	for (var i = 0, l = this.clients.length; i < l; i++){
-		if (this.clients[i] && (!except || [].concat(except).indexOf(this.clients[i].sessionId) == -1)){
-			this.clients[i].send(message);
+	for (var i = 0, k = Object.keys(this.clients), l = k.length; i < l; i++){
+		if (this.clients[k[i]] && (!except || [].concat(except).indexOf(this.clients[k[i]].sessionId) == -1)){
+			this.clients[k[i]].send(message);
 		}
 	}
 	return this;
@@ -69,10 +78,12 @@ Listener.prototype.broadcast = function(message, except){
 
 Listener.prototype.check = function(req, res, httpUpgrade, head){
 	var path = url.parse(req.url).pathname, parts, cn;
-	if (path.indexOf('/' + this.options.resource) === 0){	
+	if (path && path.indexOf('/' + this.options.resource) === 0){
 		parts = path.substr(1).split('/');
+		if (this._serveClient(parts.slice(1).join('/'), req, res)) return true;
+		if (!(parts[1] in transports)) return false;
 		if (parts[2]){
-			cn = this._lookupClient(parts[2]);
+			cn = this.clients[parts[2]];
 			if (cn){
 				cn._onConnect(req, res);
 			} else {
@@ -87,17 +98,64 @@ Listener.prototype.check = function(req, res, httpUpgrade, head){
 	return false;
 };
 
-Listener.prototype._lookupClient = function(sid){
-	return this.clientsIndex[sid];
+Listener.prototype._serveClient = function(path, req, res){
+	var self = this,
+	    types = {
+	      swf: 'application/x-shockwave-flash',
+	      js: 'text/javascript'
+	    };
+	
+	function write(path){
+		if (1==2&& req.headers['if-none-match'] == clientVersion){
+			res.writeHead(304);
+			res.end();
+		} else {
+			res.writeHead(200, self._clientFiles[path].headers);
+			res.write(self._clientFiles[path].content, self._clientFiles[path].encoding);
+			res.end();
+		}
+	};
+	
+	function error(){
+		res.writeHead(404);
+		res.write('404');
+		res.end();
+	};
+	if (req.method == 'GET' && path == 'socket.io.js' || path.indexOf('lib/vendor/web-socket-js/') === 0){
+		if (path in this._clientFiles){
+			write(path);
+		}
+		fs.readFile(__dirname + '/../../support/socket.io-client/' + path, function(err, data){
+			if (err){
+				return error();
+			} else {
+				var ext = path.split('.').pop();
+				if (!(ext in types)){
+					return error();
+				}
+				self._clientFiles[path] = {
+					headers: {
+						'Content-Length': data.length,
+						'Content-Type': types[ext],
+						'ETag': clientVersion
+					},
+					content: data,
+					encoding: ext == 'swf' ? 'binary' : 'utf8'
+				};
+				write(path);
+			}
+		});
+		return true;
+	}
+	
+	return false;
 };
 
 Listener.prototype._onClientConnect = function(client){
 	if (!(client instanceof Client) || !client.sessionId){
 		return this.options.log('Invalid client');
 	}
-	client.i = this.clients.length;
-	this.clients.push(client);
-	this.clientsIndex[client.sessionId] = client;
+	this.clients[client.sessionId] = client;
 	this.options.log('Client '+ client.sessionId +' connected');
 	this.emit('clientConnect', client);
 	this.emit('connection', client);
@@ -108,8 +166,7 @@ Listener.prototype._onClientMessage = function(data, client){
 };
 
 Listener.prototype._onClientDisconnect = function(client){
-	this.clientsIndex[client.sessionId] = null;
-	this.clients[client.i] = null;
+	delete this.clients[client.sessionId];
 	this.options.log('Client '+ client.sessionId +' disconnected');
 	this.emit('clientDisconnect', client);
 };
