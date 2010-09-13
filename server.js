@@ -37,7 +37,7 @@ var server = http.createServer(function(request, response) {
 server.listen(PictSharePort);
 
 var numberOfClients = 0;
-var listener = io.listen(server, {transports: ['websocket']});
+var listener = io.listen(server);
 listener.on('connection', function(client) {
     sendNumberOfClients(1);
     client.on('disconnect', function() {
