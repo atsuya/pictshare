@@ -7,10 +7,10 @@ var url = require('url');
 var sys = require('sys');
 var path = require('path');
 
-//var formidable = require('./libraries/formidable');
 var staticResource = require('./libraries/static-resource');
 //var mustache = require('./libraries/mustache');
 var io = require('./libraries/socketio')
+var couchdb = require('./libraries/couchdb') 
 
 var handler = staticResource.createHandler(fs.realpathSync('./static'));
 //var mustachedPages = new Array('/index.html');
@@ -37,12 +37,16 @@ var server = http.createServer(function(request, response) {
 server.listen(PictSharePort);
 
 var numberOfClients = 0;
-var listener = io.listen(server);
+var listener = io.listen(server, {'transports': ['websocket']});
 listener.on('connection', function(client) {
     sendNumberOfClients(1);
     client.on('disconnect', function() {
         sendNumberOfClients(-1);
     });
+});
+process.on('SIGINT', function () {
+    sys.debug('SIG_INT detected. Shutting down!');
+    shutdown();
 });
 sys.debug('pistshare is rocking!');
 
@@ -81,3 +85,8 @@ function sendNumberOfClients(change) {
     numberOfClients += change;
     listener.broadcast('{"type":"users", "content":"'+numberOfClients+'"}');
 }
+
+function shutdown() {
+    process.exit(0);
+}
+
