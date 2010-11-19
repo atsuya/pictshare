@@ -1,3 +1,4 @@
+var PictshareHost = "localhost";
 var PictSharePort = 8080;
 var PictShareFileSizeLimit = 1024 * 1024;
 var PictShareImageCountLimit = 6;
@@ -37,7 +38,7 @@ var server = http.createServer(function(request, response) {
         break;
     }
 });
-server.listen(PictSharePort);
+server.listen(PictSharePort, PictshareHost);
 
 var numberOfClients = 0;
 var listener = io.listen(server, {'transports': ['websocket']});
